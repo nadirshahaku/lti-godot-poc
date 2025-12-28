@@ -2,14 +2,12 @@ require("dotenv").config();
 
 const path = require("path");
 const express = require("express");
-
-// Ltijs Provider (v5+)
 const lti = require("ltijs").Provider;
 
-// 1) Setup Ltijs using SQLite (string URL)
+// ✅ Ltijs requires MongoDB for its internal storage (platforms, keys, tokens, etc.)
 lti.setup(
   process.env.LTI_ENCRYPTION_KEY,
-  "sqlite:///tmp/ltijs.db",
+  { url: process.env.LTI_DB_URL },
   {
     appRoute: "/",
     loginRoute: "/login",
@@ -19,19 +17,17 @@ lti.setup(
   }
 );
 
-// 2) Middleware + static files
+// Serve static files
 lti.app.use(express.json());
 lti.app.use(express.static(path.join(__dirname, "..", "public")));
 
-// 3) After LTI launch, redirect to /game with ltik
-lti.onConnect((token, req, res) => {
-  return lti.redirect(res, "/game");
-});
+// After LTI launch, redirect to /game with ltik
+lti.onConnect((token, req, res) => lti.redirect(res, "/game"));
 
-// 4) Wrapper page passes ltik into iframe
+// Wrapper passes ltik into the iframe
 lti.app.get("/game", (req, res) => {
   const ltik = req.query.ltik || "";
-  return res.send(`
+  res.send(`
 <!doctype html>
 <html>
 <head>
@@ -42,7 +38,6 @@ lti.app.get("/game", (req, res) => {
 <body style="font-family:sans-serif;margin:16px;">
   <h2>Godot LTI POC</h2>
   <p>Game loads below:</p>
-
   <iframe
     src="/game/index.html?ltik=${encodeURIComponent(ltik)}"
     style="width:960px;height:600px;border:1px solid #ccc;border-radius:8px;"
@@ -52,15 +47,12 @@ lti.app.get("/game", (req, res) => {
   `);
 });
 
-// 5) Grade update endpoint (client calls /api/update?ltik=XXXX)
+// API called by the game: /api/update?ltik=XXXX
 lti.app.post("/api/update", async (req, res) => {
   try {
     const token = res.locals.token;
-
     if (!token) {
-      return res
-        .status(401)
-        .send('Unauthorized: missing ltik (call /api/update?ltik=YOUR_LTIK)');
+      return res.status(401).send("Missing ltik");
     }
 
     const score = Number(req.body.score || 0);
@@ -85,13 +77,13 @@ lti.app.post("/api/update", async (req, res) => {
       gradingProgress: "FullyGraded"
     });
 
-    return res.json({ ok: true });
+    res.json({ ok: true });
   } catch (e) {
-    return res.status(500).send(String(e));
+    res.status(500).send(String(e));
   }
 });
 
-// 6) Start THEN register platform (avoid PROVIDER_NOT_DEPLOYED)
+// Start THEN register platform (avoid PROVIDER_NOT_DEPLOYED)
 (async () => {
   try {
     const port = process.env.PORT || 3000;
