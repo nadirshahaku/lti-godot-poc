@@ -7,12 +7,12 @@ const express = require("express");
 const lti = require("ltijs").Provider;
 
 // --------------------
-// 1) Setup Ltijs using SQLite in /tmp (NO Firebase)
+// 1) Setup Ltijs using SQLite in /tmp (no Firebase)
 // --------------------
 lti.setup(
   process.env.LTI_ENCRYPTION_KEY,
   {
-    // Use sqlite in /tmp so Render can write without special setup
+    // Render can write to /tmp
     url: "sqlite:///tmp/ltijs.db"
   },
   {
@@ -31,14 +31,14 @@ lti.app.use(express.json());
 lti.app.use(express.static(path.join(__dirname, "..", "public")));
 
 // --------------------
-// 3) After LTI launch, redirect to /game with ltik
+// 3) After LTI launch, redirect to /game (ltijs adds ?ltik=...)
 // --------------------
 lti.onConnect((token, req, res) => {
   return lti.redirect(res, "/game");
 });
 
 // --------------------
-// 4) Game wrapper page (passes ltik to the iframe)
+// 4) Wrapper that passes ltik into the game iframe
 // --------------------
 lti.app.get("/game", (req, res) => {
   const ltik = req.query.ltik || "";
@@ -82,7 +82,7 @@ lti.app.post("/api/update", async (req, res) => {
 
     const grade = lti.GradeService(token);
 
-    // Create/get "Score" column
+    // Create/get "Score" line item
     const scoreLineItem =
       (await grade.getLineItemByLabel("Score")) ||
       (await grade.createLineItem({
@@ -91,7 +91,7 @@ lti.app.post("/api/update", async (req, res) => {
         resourceId: "score"
       }));
 
-    // Send score to Moodle (attempts stored in comment)
+    // Post score (attempts included as comment)
     await grade.submitScore(scoreLineItem.id, {
       userId: token.user,
       scoreGiven: score,
@@ -108,10 +108,18 @@ lti.app.post("/api/update", async (req, res) => {
 });
 
 // --------------------
-// 6) Start service + register Moodle platform
+// 6) Start service THEN register Moodle platform
+// (This fixes PROVIDER_NOT_DEPLOYED)
 // --------------------
 (async () => {
   try {
+    const port = process.env.PORT || 3000;
+
+    // 1) Deploy provider first
+    await lti.deploy({ port });
+    console.log("Running on", port);
+
+    // 2) Register Moodle platform after deploy
     await lti.registerPlatform({
       url: "https://quizgametest.moodlecloud.com",
       name: "MoodleCloud QuizGameTest",
@@ -125,9 +133,7 @@ lti.app.post("/api/update", async (req, res) => {
       deploymentId: "2"
     });
 
-    const port = process.env.PORT || 3000;
-    await lti.deploy({ port });
-    console.log("Running on", port);
+    console.log("Platform registered.");
   } catch (err) {
     console.error("Startup error:", err);
     process.exit(1);
