@@ -31,6 +31,7 @@ lti.setup(
 );
 
 // Express middleware inside Ltijs app
+lti.app.use(require("express").json());
 lti.app.use(express.json());
 lti.app.use(express.static(path.join(__dirname, "..", "public")));
 
@@ -86,7 +87,7 @@ lti.onConnect(async (token, req, res) => {
 });
 
 // Post grades back to Moodle (Score + Attempts)
-lti.app.post("/api/update", lti.authenticate(), async (req, res) => {
+lti.app.post("/api/update", async (req, res) => {
   try {
     const token = res.locals.token;
 
