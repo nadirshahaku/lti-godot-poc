@@ -116,9 +116,39 @@ lti.app.post("/api/update", async (req, res) => {
 // ---- Start on Render ----
 (async () => {
   const port = process.env.PORT || 3000;
+
+  // Register MoodleCloud platform (must be BEFORE deploy)
+  await lti.registerPlatform({
+    url: "https://quizgametest.moodlecloud.com",
+    name: "MoodleCloud QuizGameTest",
+    clientId: "GzMJPZMQfLMVRts",
+    authenticationEndpoint: "https://quizgametest.moodlecloud.com/mod/lti/auth.php",
+    accesstokenEndpoint: "https://quizgametest.moodlecloud.com/mod/lti/token.php",
+    authConfig: {
+      method: "JWK_SET",
+      key: "https://quizgametest.moodlecloud.com/mod/lti/certs.php"
+    },
+    deploymentId: "2"
+  });
+
   await lti.deploy({ port });
   console.log("Running on", port);
+})();
 
-  // ✅ Later (after Moodle gives you values) we will add:
-  // await lti.registerPlatform({...});
+
+
+
+    await lti.registerPlatform({
+    url: "https://quizgametest.moodlecloud.com",
+    name: "MoodleCloud QuizGameTest",
+    clientId: "GzMJPZMQfLMVRts",
+    authenticationEndpoint: "https://quizgametest.moodlecloud.com/mod/lti/auth.php",
+    accesstokenEndpoint: "https://quizgametest.moodlecloud.com/mod/lti/token.php",
+    authConfig: {
+      method: "JWK_SET",
+      key: "https://quizgametest.moodlecloud.com/mod/lti/certs.php"
+    },
+    deploymentId: "2"
+  });
+
 })();
