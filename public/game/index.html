@@ -8,15 +8,30 @@
   <h3>Game Placeholder</h3>
   <p>These buttons simulate clicks from the Godot game.</p>
 
-  <button onclick="window.parent.updateToMoodle(1,1,false)">
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const ltik = params.get("ltik");
+
+    async function send(score, attempts, isExit) {
+      const r = await fetch("/api/update?ltik=" + encodeURIComponent(ltik), {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({ score, attempts, isExit: !!isExit })
+      });
+      if (!r.ok) alert(await r.text());
+      if (isExit) window.parent.close();
+    }
+  </script>
+
+  <button onclick="send(1,1,false)">
     Simulate RIGHT (score=1, attempts=1)
   </button>
 
-  <button onclick="window.parent.updateToMoodle(0,1,false)" style="margin-left:8px;">
+  <button onclick="send(0,1,false)" style="margin-left:8px;">
     Simulate WRONG (score=0, attempts=1)
   </button>
 
-  <button onclick="window.parent.updateToMoodle(1,1,true)" style="margin-left:8px;">
+  <button onclick="send(1,1,true)" style="margin-left:8px;">
     Simulate EXIT
   </button>
 </body>
