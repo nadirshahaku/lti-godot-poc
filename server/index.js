@@ -1,30 +1,20 @@
 require("dotenv").config();
 
-const fs = require("fs");
 const path = require("path");
 const express = require("express");
 
 // Ltijs Provider (v5+)
 const lti = require("ltijs").Provider;
 
-// Firestore plugin
-const { Firestore } = require("@examind/ltijs-firestore");
-
 // --------------------
-// 0) Firebase credentials from Render env var
-// --------------------
-if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
-  const credsPath = "/tmp/service-account.json";
-  fs.writeFileSync(credsPath, process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
-  process.env.LTIJS_APPLICATION_CREDENTIALS = credsPath;
-}
-
-// --------------------
-// 1) Setup Ltijs
+// 1) Setup Ltijs using SQLite in /tmp (NO Firebase)
 // --------------------
 lti.setup(
   process.env.LTI_ENCRYPTION_KEY,
-  { plugin: new Firestore({ collectionPrefix: "ltijs-" }) },
+  {
+    // Use sqlite in /tmp so Render can write without special setup
+    url: "sqlite:///tmp/ltijs.db"
+  },
   {
     appRoute: "/",
     loginRoute: "/login",
@@ -48,12 +38,10 @@ lti.onConnect((token, req, res) => {
 });
 
 // --------------------
-// 4) Game wrapper page
-// (passes ltik to the placeholder/game iframe)
+// 4) Game wrapper page (passes ltik to the iframe)
 // --------------------
 lti.app.get("/game", (req, res) => {
   const ltik = req.query.ltik || "";
-
   return res.send(`
 <!doctype html>
 <html>
@@ -103,7 +91,7 @@ lti.app.post("/api/update", async (req, res) => {
         resourceId: "score"
       }));
 
-    // Send score to Moodle gradebook (attempts goes into comment)
+    // Send score to Moodle (attempts stored in comment)
     await grade.submitScore(scoreLineItem.id, {
       userId: token.user,
       scoreGiven: score,
@@ -124,7 +112,6 @@ lti.app.post("/api/update", async (req, res) => {
 // --------------------
 (async () => {
   try {
-    // IMPORTANT: Register platform BEFORE deploy
     await lti.registerPlatform({
       url: "https://quizgametest.moodlecloud.com",
       name: "MoodleCloud QuizGameTest",
