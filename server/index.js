@@ -6,15 +6,10 @@ const express = require("express");
 // Ltijs Provider (v5+)
 const lti = require("ltijs").Provider;
 
-// --------------------
-// 1) Setup Ltijs using SQLite in /tmp (no Firebase)
-// --------------------
+// 1) Setup Ltijs using SQLite (string URL)
 lti.setup(
   process.env.LTI_ENCRYPTION_KEY,
-  {
-    // Render can write to /tmp
-    url: "sqlite:///tmp/ltijs.db"
-  },
+  "sqlite:///tmp/ltijs.db",
   {
     appRoute: "/",
     loginRoute: "/login",
@@ -24,22 +19,16 @@ lti.setup(
   }
 );
 
-// --------------------
 // 2) Middleware + static files
-// --------------------
 lti.app.use(express.json());
 lti.app.use(express.static(path.join(__dirname, "..", "public")));
 
-// --------------------
-// 3) After LTI launch, redirect to /game (ltijs adds ?ltik=...)
-// --------------------
+// 3) After LTI launch, redirect to /game with ltik
 lti.onConnect((token, req, res) => {
   return lti.redirect(res, "/game");
 });
 
-// --------------------
-// 4) Wrapper that passes ltik into the game iframe
-// --------------------
+// 4) Wrapper page passes ltik into iframe
 lti.app.get("/game", (req, res) => {
   const ltik = req.query.ltik || "";
   return res.send(`
@@ -63,10 +52,7 @@ lti.app.get("/game", (req, res) => {
   `);
 });
 
-// --------------------
-// 5) Grade update endpoint
-// Client must call: /api/update?ltik=XXXX
-// --------------------
+// 5) Grade update endpoint (client calls /api/update?ltik=XXXX)
 lti.app.post("/api/update", async (req, res) => {
   try {
     const token = res.locals.token;
@@ -82,7 +68,6 @@ lti.app.post("/api/update", async (req, res) => {
 
     const grade = lti.GradeService(token);
 
-    // Create/get "Score" line item
     const scoreLineItem =
       (await grade.getLineItemByLabel("Score")) ||
       (await grade.createLineItem({
@@ -91,7 +76,6 @@ lti.app.post("/api/update", async (req, res) => {
         resourceId: "score"
       }));
 
-    // Post score (attempts included as comment)
     await grade.submitScore(scoreLineItem.id, {
       userId: token.user,
       scoreGiven: score,
@@ -107,19 +91,14 @@ lti.app.post("/api/update", async (req, res) => {
   }
 });
 
-// --------------------
-// 6) Start service THEN register Moodle platform
-// (This fixes PROVIDER_NOT_DEPLOYED)
-// --------------------
+// 6) Start THEN register platform (avoid PROVIDER_NOT_DEPLOYED)
 (async () => {
   try {
     const port = process.env.PORT || 3000;
 
-    // 1) Deploy provider first
     await lti.deploy({ port });
     console.log("Running on", port);
 
-    // 2) Register Moodle platform after deploy
     await lti.registerPlatform({
       url: "https://quizgametest.moodlecloud.com",
       name: "MoodleCloud QuizGameTest",
