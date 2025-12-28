@@ -1,24 +1,45 @@
 require("dotenv").config();
 
-const path = require("path");
+const fs = require("fs");
 const express = require("express");
-const { Provider } = require("ltijs");
+const path = require("path");
 
-const app = express();
-app.use(express.json());
+// ✅ Ltijs v5+: Provider is not a constructor. Use lti.setup(...)
+const lti = require("ltijs").Provider;
 
-// POC DB (Render can write to /tmp)
-const DB_URL = process.env.LTI_DB_URL || "sqlite:///tmp/lti.db";
+// Firestore plugin (works with Firebase Spark)
+const { Firestore } = require("@examind/ltijs-firestore");
 
-// LTI provider
-const lti = new Provider(process.env.LTI_ENCRYPTION_KEY, DB_URL, {
-  appRoute: "/",
-  loginRoute: "/login",
-  keysetRoute: "/keys",
-  cookies: { secure: true, sameSite: "none" }
-});
+// Write Firebase service account JSON into a file at runtime (Render-friendly)
+if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+  const credsPath = "/tmp/service-account.json";
+  fs.writeFileSync(credsPath, process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+  process.env.LTIJS_APPLICATION_CREDENTIALS = credsPath;
+}
 
-// Launch HTML (loads the game in an iframe)
+// Setup Ltijs with Firestore storage
+lti.setup(
+  process.env.LTI_ENCRYPTION_KEY,
+  { plugin: new Firestore({ collectionPrefix: "ltijs-" }) },
+  {
+    appRoute: "/",
+    loginRoute: "/login",
+    keysetRoute: "/keys",
+    cookies: { secure: true, sameSite: "none" },
+    devMode: false
+  }
+);
+
+// Express middleware inside Ltijs app
+lti.app.use(express.json());
+lti.app.use(express.static(path.join(__dirname, "..", "public")));
+
+function getUser(token) {
+  const email = token?.userInfo?.email || token?.email || "unknown@example.com";
+  const name = token?.userInfo?.name || token?.name || "Unknown User";
+  return { email, name };
+}
+
 function launchHtml(user) {
   return `
 <!doctype html>
@@ -58,82 +79,59 @@ function launchHtml(user) {
 </html>`;
 }
 
-function getUser(token) {
-  const email = token?.userInfo?.email || token?.email || "unknown@example.com";
-  const name = token?.userInfo?.name || token?.name || "Unknown User";
-  return { email, name, userId: token?.user || token?.sub };
-}
+// LTI launch handler
+lti.onConnect(async (token, req, res) => {
+  const user = getUser(token);
+  return res.send(launchHtml(user));
+});
 
+// Post grades back to Moodle (Score + Attempts)
+lti.app.post("/api/update", lti.authenticate(), async (req, res) => {
+  try {
+    const token = res.locals.token;
+
+    const score = Number(req.body.score || 0);
+    const attempts = Number(req.body.attempts || 0);
+
+    const grade = lti.GradeService(token);
+
+    const scoreLineItem =
+      (await grade.getLineItemByLabel("Score")) ||
+      (await grade.createLineItem({ label: "Score", scoreMaximum: 10, resourceId: "score" }));
+
+    const attemptsLineItem =
+      (await grade.getLineItemByLabel("Attempts")) ||
+      (await grade.createLineItem({ label: "Attempts", scoreMaximum: 1000, resourceId: "attempts" }));
+
+    await grade.submitScore(scoreLineItem.id, {
+      userId: token.user,
+      scoreGiven: score,
+      scoreMaximum: 10,
+      comment: `Attempts: ${attempts}`,
+      activityProgress: "Completed",
+      gradingProgress: "FullyGraded"
+    });
+
+    await grade.submitScore(attemptsLineItem.id, {
+      userId: token.user,
+      scoreGiven: attempts,
+      scoreMaximum: 1000,
+      comment: `Score: ${score}`,
+      activityProgress: "Completed",
+      gradingProgress: "FullyGraded"
+    });
+
+    return res.json({ ok: true });
+  } catch (e) {
+    return res.status(500).send(String(e));
+  }
+});
+
+// Start the service
 (async () => {
-  await lti.setup();
-
-  // ✅ We will add MoodleCloud platform registration here in a later step.
-  // await lti.registerPlatform({...});
-
-  // Serve static files from /public
-  app.use(express.static(path.join(__dirname, "..", "public")));
-
-  // LTI launch: Moodle sends user here
-  lti.onConnect(async (token, req, res) => {
-    const user = getUser(token);
-    res.send(launchHtml(user));
-  });
-
-  // API: post score + attempts back to Moodle gradebook
-  app.post("/api/update", lti.authenticate(), async (req, res) => {
-    try {
-      const token = res.locals.token;
-
-      const score = Number(req.body.score || 0);
-      const attempts = Number(req.body.attempts || 0);
-
-      const grade = lti.GradeService(token);
-
-      // Two grade columns (LineItems): Score + Attempts
-      const scoreLineItem =
-        (await grade.getLineItemByLabel("Score")) ||
-        (await grade.createLineItem({
-          label: "Score",
-          scoreMaximum: 10,
-          resourceId: "score"
-        }));
-
-      const attemptsLineItem =
-        (await grade.getLineItemByLabel("Attempts")) ||
-        (await grade.createLineItem({
-          label: "Attempts",
-          scoreMaximum: 1000,
-          resourceId: "attempts"
-        }));
-
-      // Post Score
-      await grade.submitScore(scoreLineItem.id, {
-        userId: token.user,
-        scoreGiven: score,
-        scoreMaximum: 10,
-        comment: `Attempts: ${attempts}`,
-        activityProgress: "Completed",
-        gradingProgress: "FullyGraded"
-      });
-
-      // Post Attempts (as second column)
-      await grade.submitScore(attemptsLineItem.id, {
-        userId: token.user,
-        scoreGiven: attempts,
-        scoreMaximum: 1000,
-        comment: `Score: ${score}`,
-        activityProgress: "Completed",
-        gradingProgress: "FullyGraded"
-      });
-
-      res.json({ ok: true });
-    } catch (e) {
-      res.status(500).send(String(e));
-    }
-  });
-
-  await lti.deploy({ app, serverless: true });
-
   const port = process.env.PORT || 3000;
-  app.listen(port, () => console.log("Running on", port));
+  await lti.deploy({ port });
+  console.log("Running on", port);
+
+  // ✅ Later we will add: lti.registerPlatform({...}) after Moodle provides values
 })();
