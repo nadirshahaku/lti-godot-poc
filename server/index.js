@@ -4,7 +4,7 @@ const path = require("path");
 const express = require("express");
 const lti = require("ltijs").Provider;
 
-// ✅ Ltijs requires MongoDB for its internal storage (platforms, keys, tokens, etc.)
+// ---- LTI setup (MongoDB Atlas) ----
 lti.setup(
   process.env.LTI_ENCRYPTION_KEY,
   { url: process.env.LTI_DB_URL },
@@ -21,13 +21,15 @@ lti.setup(
 lti.app.use(express.json());
 lti.app.use(express.static(path.join(__dirname, "..", "public")));
 
-// After LTI launch, redirect to /game with ltik
-lti.onConnect((token, req, res) => lti.redirect(res, "/game"));
+// Simple health check (useful if you open the URL directly)
+lti.app.get("/health", (req, res) => res.send("OK"));
 
-// Wrapper passes ltik into the iframe
-lti.app.get("/game", (req, res) => {
+// ---- LTI Launch: send the page DIRECTLY (no redirect) ----
+lti.onConnect((token, req, res) => {
+  // Ltijs includes ltik in the launch URL query
   const ltik = req.query.ltik || "";
-  res.send(`
+
+  return res.send(`
 <!doctype html>
 <html>
 <head>
@@ -38,6 +40,7 @@ lti.app.get("/game", (req, res) => {
 <body style="font-family:sans-serif;margin:16px;">
   <h2>Godot LTI POC</h2>
   <p>Game loads below:</p>
+
   <iframe
     src="/game/index.html?ltik=${encodeURIComponent(ltik)}"
     style="width:960px;height:600px;border:1px solid #ccc;border-radius:8px;"
@@ -47,13 +50,11 @@ lti.app.get("/game", (req, res) => {
   `);
 });
 
-// API called by the game: /api/update?ltik=XXXX
+// ---- Grade update endpoint ----
 lti.app.post("/api/update", async (req, res) => {
   try {
     const token = res.locals.token;
-    if (!token) {
-      return res.status(401).send("Missing ltik");
-    }
+    if (!token) return res.status(401).send("Missing/invalid ltik");
 
     const score = Number(req.body.score || 0);
     const attempts = Number(req.body.attempts || 0);
@@ -77,13 +78,13 @@ lti.app.post("/api/update", async (req, res) => {
       gradingProgress: "FullyGraded"
     });
 
-    res.json({ ok: true });
+    return res.json({ ok: true });
   } catch (e) {
-    res.status(500).send(String(e));
+    return res.status(500).send(String(e));
   }
 });
 
-// Start THEN register platform (avoid PROVIDER_NOT_DEPLOYED)
+// ---- Start then register platform ----
 (async () => {
   try {
     const port = process.env.PORT || 3000;
