@@ -4,7 +4,9 @@ const path = require("path");
 const express = require("express");
 const lti = require("ltijs").Provider;
 
-// ---- LTI setup (MongoDB Atlas) ----
+// --------------------
+// 1) LTI setup (MongoDB Atlas is REQUIRED by ltijs)
+// --------------------
 lti.setup(
   process.env.LTI_ENCRYPTION_KEY,
   { url: process.env.LTI_DB_URL },
@@ -17,16 +19,18 @@ lti.setup(
   }
 );
 
-// Serve static files
+// --------------------
+// 2) Middleware + static files
+// --------------------
 lti.app.use(express.json());
 lti.app.use(express.static(path.join(__dirname, "..", "public")));
 
-// Simple health check (useful if you open the URL directly)
 lti.app.get("/health", (req, res) => res.send("OK"));
 
-// ---- LTI Launch: send the page DIRECTLY (no redirect) ----
+// --------------------
+// 3) LTI launch: show the game page directly (prevents launch loops)
+// --------------------
 lti.onConnect((token, req, res) => {
-  // Ltijs includes ltik in the launch URL query
   const ltik = req.query.ltik || "";
 
   return res.send(`
@@ -50,7 +54,10 @@ lti.onConnect((token, req, res) => {
   `);
 });
 
-// ---- Grade update endpoint ----
+// --------------------
+// 4) Grade update endpoint
+// The placeholder/game calls: POST /api/update?ltik=XXXX
+// --------------------
 lti.app.post("/api/update", async (req, res) => {
   try {
     const token = res.locals.token;
@@ -59,15 +66,20 @@ lti.app.post("/api/update", async (req, res) => {
     const score = Number(req.body.score || 0);
     const attempts = Number(req.body.attempts || 0);
 
-    const grade = lti.GradeService(token);
+    // ✅ Correct Ltijs API: use lti.Grade (not GradeService)
+    const grade = new lti.Grade(token);
 
-    const scoreLineItem =
-      (await grade.getLineItemByLabel("Score")) ||
-      (await grade.createLineItem({
+    // Reuse "Score" line item if it already exists
+    const lineItems = await grade.getLineItems();
+    let scoreLineItem = lineItems.find((li) => li.label === "Score");
+
+    if (!scoreLineItem) {
+      scoreLineItem = await grade.createLineItem({
         label: "Score",
         scoreMaximum: 10,
         resourceId: "score"
-      }));
+      });
+    }
 
     await grade.submitScore(scoreLineItem.id, {
       userId: token.user,
@@ -78,13 +90,15 @@ lti.app.post("/api/update", async (req, res) => {
       gradingProgress: "FullyGraded"
     });
 
-    return res.json({ ok: true });
+    return res.json({ ok: true, posted: { score, attempts } });
   } catch (e) {
     return res.status(500).send(String(e));
   }
 });
 
-// ---- Start then register platform ----
+// --------------------
+// 5) Start service then register Moodle platform
+// --------------------
 (async () => {
   try {
     const port = process.env.PORT || 3000;
