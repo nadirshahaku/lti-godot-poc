@@ -10,14 +10,18 @@ const lti = require("ltijs").Provider;
 // Firestore plugin
 const { Firestore } = require("@examind/ltijs-firestore");
 
-// ---- Firebase credentials from Render env var ----
+// --------------------
+// 0) Firebase credentials from Render env var
+// --------------------
 if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
   const credsPath = "/tmp/service-account.json";
   fs.writeFileSync(credsPath, process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
   process.env.LTIJS_APPLICATION_CREDENTIALS = credsPath;
 }
 
-// ---- Setup Ltijs ----
+// --------------------
+// 1) Setup Ltijs
+// --------------------
 lti.setup(
   process.env.LTI_ENCRYPTION_KEY,
   { plugin: new Firestore({ collectionPrefix: "ltijs-" }) },
@@ -30,18 +34,23 @@ lti.setup(
   }
 );
 
-// ---- Serve your static files (/public) ----
+// --------------------
+// 2) Middleware + static files
+// --------------------
 lti.app.use(express.json());
 lti.app.use(express.static(path.join(__dirname, "..", "public")));
 
-// ✅ After Moodle launch, Ltijs will redirect and include ?ltik=...
+// --------------------
+// 3) After LTI launch, redirect to /game with ltik
+// --------------------
 lti.onConnect((token, req, res) => {
   return lti.redirect(res, "/game");
 });
 
-// ---- Game wrapper page ----
-// This page receives ltik in the URL and stores it in window.LTIK.
-// Then it loads your placeholder/game page in an iframe.
+// --------------------
+// 4) Game wrapper page
+// (passes ltik to the placeholder/game iframe)
+// --------------------
 lti.app.get("/game", (req, res) => {
   const ltik = req.query.ltik || "";
 
@@ -55,26 +64,23 @@ lti.app.get("/game", (req, res) => {
 </head>
 <body style="font-family:sans-serif;margin:16px;">
   <h2>Godot LTI POC</h2>
-
   <p>Game loads below:</p>
 
   <iframe
     src="/game/index.html?ltik=${encodeURIComponent(ltik)}"
     style="width:960px;height:600px;border:1px solid #ccc;border-radius:8px;"
   ></iframe>
-
 </body>
 </html>
   `);
 });
 
-// ---- Grade update endpoint ----
-// IMPORTANT: Ltijs will only know who the user is if ltik is provided.
-// So your client must call: /api/update?ltik=XXXX
+// --------------------
+// 5) Grade update endpoint
+// Client must call: /api/update?ltik=XXXX
+// --------------------
 lti.app.post("/api/update", async (req, res) => {
   try {
-    // Ltijs validates the request using ltik automatically (when ltik is present)
-    // and then sets res.locals.token.
     const token = res.locals.token;
 
     if (!token) {
@@ -88,7 +94,7 @@ lti.app.post("/api/update", async (req, res) => {
 
     const grade = lti.GradeService(token);
 
-    // Create/get Score line item
+    // Create/get "Score" column
     const scoreLineItem =
       (await grade.getLineItemByLabel("Score")) ||
       (await grade.createLineItem({
@@ -97,7 +103,7 @@ lti.app.post("/api/update", async (req, res) => {
         resourceId: "score"
       }));
 
-    // Send score to Moodle gradebook
+    // Send score to Moodle gradebook (attempts goes into comment)
     await grade.submitScore(scoreLineItem.id, {
       userId: token.user,
       scoreGiven: score,
@@ -113,42 +119,30 @@ lti.app.post("/api/update", async (req, res) => {
   }
 });
 
-// ---- Start on Render ----
+// --------------------
+// 6) Start service + register Moodle platform
+// --------------------
 (async () => {
-  const port = process.env.PORT || 3000;
-
-  // Register MoodleCloud platform (must be BEFORE deploy)
-  await lti.registerPlatform({
-    url: "https://quizgametest.moodlecloud.com",
-    name: "MoodleCloud QuizGameTest",
-    clientId: "GzMJPZMQfLMVRts",
-    authenticationEndpoint: "https://quizgametest.moodlecloud.com/mod/lti/auth.php",
-    accesstokenEndpoint: "https://quizgametest.moodlecloud.com/mod/lti/token.php",
-    authConfig: {
-      method: "JWK_SET",
-      key: "https://quizgametest.moodlecloud.com/mod/lti/certs.php"
-    },
-    deploymentId: "2"
-  });
-
-  await lti.deploy({ port });
-  console.log("Running on", port);
-})();
-
-
-
-
+  try {
+    // IMPORTANT: Register platform BEFORE deploy
     await lti.registerPlatform({
-    url: "https://quizgametest.moodlecloud.com",
-    name: "MoodleCloud QuizGameTest",
-    clientId: "GzMJPZMQfLMVRts",
-    authenticationEndpoint: "https://quizgametest.moodlecloud.com/mod/lti/auth.php",
-    accesstokenEndpoint: "https://quizgametest.moodlecloud.com/mod/lti/token.php",
-    authConfig: {
-      method: "JWK_SET",
-      key: "https://quizgametest.moodlecloud.com/mod/lti/certs.php"
-    },
-    deploymentId: "2"
-  });
+      url: "https://quizgametest.moodlecloud.com",
+      name: "MoodleCloud QuizGameTest",
+      clientId: "GzMJPZMQfLMVRts",
+      authenticationEndpoint: "https://quizgametest.moodlecloud.com/mod/lti/auth.php",
+      accesstokenEndpoint: "https://quizgametest.moodlecloud.com/mod/lti/token.php",
+      authConfig: {
+        method: "JWK_SET",
+        key: "https://quizgametest.moodlecloud.com/mod/lti/certs.php"
+      },
+      deploymentId: "2"
+    });
 
+    const port = process.env.PORT || 3000;
+    await lti.deploy({ port });
+    console.log("Running on", port);
+  } catch (err) {
+    console.error("Startup error:", err);
+    process.exit(1);
+  }
 })();
