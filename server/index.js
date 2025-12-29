@@ -24,14 +24,14 @@ lti.setup(
 // --------------------
 lti.app.use(express.json());
 lti.app.use(express.static(path.join(__dirname, "..", "public")));
-
 lti.app.get("/health", (req, res) => res.send("OK"));
 
 // --------------------
-// 3) LTI launch page (no redirect loop)
+// 3) LTI launch page (no loops)
 // --------------------
 lti.onConnect((token, req, res) => {
   const ltik = req.query.ltik || "";
+
   return res.send(`
 <!doctype html>
 <html>
@@ -54,86 +54,60 @@ lti.onConnect((token, req, res) => {
 });
 
 // --------------------
-// 4) Helper: get a Grade API object in a version-safe way
-// --------------------
-function getGradeApi(token) {
-  // Variant A: GradeService(token) function exists
-  if (typeof lti.GradeService === "function") return lti.GradeService(token);
-
-  // Variant B: Grade(token) function exists (not constructor)
-  if (typeof lti.Grade === "function") return lti.Grade(token);
-
-  // Variant C: Grade is a constructor (rare in your case)
-  if (typeof lti.Grade === "object" && typeof lti.Grade.default === "function") {
-    return new lti.Grade.default(token);
-  }
-
-  return null;
-}
-
-// --------------------
-// 5) Grade update endpoint
+// 4) Grade update endpoint
+// Uses ltijs built-in grade static API: lti.Grade.*
 // --------------------
 lti.app.post("/api/update", async (req, res) => {
   try {
-    const token = res.locals.token;
-    if (!token) return res.status(401).send("Missing/invalid ltik");
+    const idtoken = res.locals.token; // ltijs puts the validated launch token here
+    if (!idtoken) return res.status(401).send("Missing/invalid ltik");
 
     const score = Number(req.body.score || 0);
     const attempts = Number(req.body.attempts || 0);
 
-    const grade = getGradeApi(token);
-    if (!grade) {
-      return res
-        .status(500)
-        .send("Grade API not available in this Ltijs build (no GradeService/Grade).");
-    }
-
-    // ---- Find or create line item "Score"
-    let scoreLineItem = null;
-
-    // Some Ltijs builds provide getLineItemByLabel, others use getLineItems + filter
-    if (typeof grade.getLineItemByLabel === "function") {
-      scoreLineItem = await grade.getLineItemByLabel("Score");
-    } else if (typeof grade.getLineItems === "function") {
-      const items = await grade.getLineItems();
-      scoreLineItem = items.find((li) => li.label === "Score") || null;
-    }
-
-    if (!scoreLineItem && typeof grade.createLineItem === "function") {
-      scoreLineItem = await grade.createLineItem({
-        label: "Score",
-        scoreMaximum: 10,
-        resourceId: "score"
-      });
-    }
-
-    if (!scoreLineItem || !scoreLineItem.id) {
-      return res.status(500).send("Could not create/find Score line item.");
-    }
-
-    // ---- Submit score
-    if (typeof grade.submitScore !== "function") {
-      return res.status(500).send("submitScore is not available on Grade API.");
-    }
-
-    await grade.submitScore(scoreLineItem.id, {
-      userId: token.user,
+    // Build grade object (score out of 10)
+    const gradeObj = {
+      userId: idtoken.user,
       scoreGiven: score,
       scoreMaximum: 10,
       comment: `Attempts: ${attempts}`,
       activityProgress: "Completed",
       gradingProgress: "FullyGraded"
-    });
+    };
 
-    return res.json({ ok: true, posted: { score, attempts } });
+    // Try to use lineitem from token first
+    let lineItemId = idtoken?.platformContext?.endpoint?.lineitem;
+
+    // If not present, get or create a line item for this resource link
+    if (!lineItemId) {
+      const response = await lti.Grade.getLineItems(idtoken, { resourceLinkId: true });
+      const lineItems = response?.lineItems || [];
+
+      if (lineItems.length === 0) {
+        const newLineItem = {
+          scoreMaximum: 10,
+          label: "Score",
+          tag: "score",
+          resourceLinkId: idtoken.platformContext.resource.id
+        };
+        const created = await lti.Grade.createLineItem(idtoken, newLineItem);
+        lineItemId = created.id;
+      } else {
+        // Reuse first line item
+        lineItemId = lineItems[0].id;
+      }
+    }
+
+    // Send grade to Moodle
+    const result = await lti.Grade.submitScore(idtoken, lineItemId, gradeObj);
+    return res.json({ ok: true, result });
   } catch (e) {
     return res.status(500).send(String(e));
   }
 });
 
 // --------------------
-// 6) Start then register Moodle platform
+// 5) Start then register Moodle platform
 // --------------------
 (async () => {
   try {
