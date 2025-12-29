@@ -4,9 +4,9 @@ const path = require("path");
 const express = require("express");
 const lti = require("ltijs").Provider;
 
-// --------------------
-// 1) LTI setup (MongoDB Atlas)
-// --------------------
+// ----------------------------------------------------
+// 1) Setup Ltijs (MongoDB Atlas is required by ltijs)
+// ----------------------------------------------------
 lti.setup(
   process.env.LTI_ENCRYPTION_KEY,
   { url: process.env.LTI_DB_URL },
@@ -19,16 +19,17 @@ lti.setup(
   }
 );
 
-// --------------------
-// 2) Middleware + static files
-// --------------------
+// ----------------------------------------------------
+// 2) Middleware + static hosting
+// ----------------------------------------------------
 lti.app.use(express.json());
 lti.app.use(express.static(path.join(__dirname, "..", "public")));
+
 lti.app.get("/health", (req, res) => res.send("OK"));
 
-// --------------------
-// 3) LTI launch page (no loops)
-// --------------------
+// ----------------------------------------------------
+// 3) LTI Launch (send page directly to avoid loops)
+// ----------------------------------------------------
 lti.onConnect((token, req, res) => {
   const ltik = req.query.ltik || "";
 
@@ -53,32 +54,38 @@ lti.onConnect((token, req, res) => {
   `);
 });
 
-// --------------------
-// 4) Grade update endpoint
-// Uses ltijs built-in grade static API: lti.Grade.*
-// --------------------
+// ----------------------------------------------------
+// 4) Grade endpoint (THIS is the ltijs-supported way)
+//     - uses res.locals.token (set by ltijs when ltik is provided)
+//     - uses lti.Grade.getLineItems/createLineItem/submitScore
+//     - includes timestamp (helps Moodle accept score)
+// ----------------------------------------------------
 lti.app.post("/api/update", async (req, res) => {
   try {
-    const idtoken = res.locals.token; // ltijs puts the validated launch token here
-    if (!idtoken) return res.status(401).send("Missing/invalid ltik");
+    const idtoken = res.locals.token; // provided by ltijs when request includes ?ltik=
+    if (!idtoken) return res.status(401).send("Unauthorized: missing/invalid ltik");
 
     const score = Number(req.body.score || 0);
     const attempts = Number(req.body.attempts || 0);
 
-    // Build grade object (score out of 10)
+    // Keep score within 0..10 (Moodle can reject “incorrect score”)
+    const scoreClamped = Math.max(0, Math.min(10, score));
+
+    // Score payload (include timestamp)
     const gradeObj = {
       userId: idtoken.user,
-      scoreGiven: score,
+      scoreGiven: scoreClamped,
       scoreMaximum: 10,
-      comment: `Attempts: ${attempts}`,
       activityProgress: "Completed",
-      gradingProgress: "FullyGraded"
+      gradingProgress: "FullyGraded",
+      timestamp: new Date().toISOString(),
+      comment: `Attempts: ${attempts}`
     };
 
-    // Try to use lineitem from token first
+    // 1) Try to use lineitem id from token (fast path)
     let lineItemId = idtoken?.platformContext?.endpoint?.lineitem;
 
-    // If not present, get or create a line item for this resource link
+    // 2) Otherwise, fetch line items for this resource link and reuse/create
     if (!lineItemId) {
       const response = await lti.Grade.getLineItems(idtoken, { resourceLinkId: true });
       const lineItems = response?.lineItems || [];
@@ -93,22 +100,24 @@ lti.app.post("/api/update", async (req, res) => {
         const created = await lti.Grade.createLineItem(idtoken, newLineItem);
         lineItemId = created.id;
       } else {
-        // Reuse first line item
+        // Reuse first line item for this activity
         lineItemId = lineItems[0].id;
       }
     }
 
-    // Send grade to Moodle
-    const result = await lti.Grade.submitScore(idtoken, lineItemId, gradeObj);
-    return res.json({ ok: true, result });
-  } catch (e) {
-    return res.status(500).send(String(e));
+    // 3) Submit the score
+    const responseGrade = await lti.Grade.submitScore(idtoken, lineItemId, gradeObj);
+
+    return res.json({ ok: true, posted: { score: scoreClamped, attempts }, responseGrade });
+  } catch (err) {
+    // Return real error text so you can see exactly what Moodle/ltijs says
+    return res.status(500).send(err?.message || String(err));
   }
 });
 
-// --------------------
+// ----------------------------------------------------
 // 5) Start then register Moodle platform
-// --------------------
+// ----------------------------------------------------
 (async () => {
   try {
     const port = process.env.PORT || 3000;
