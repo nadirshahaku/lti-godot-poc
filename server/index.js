@@ -5,7 +5,7 @@ const express = require("express");
 const lti = require("ltijs").Provider;
 
 // --------------------
-// 1) LTI setup (MongoDB Atlas is REQUIRED by ltijs)
+// 1) LTI setup (MongoDB Atlas)
 // --------------------
 lti.setup(
   process.env.LTI_ENCRYPTION_KEY,
@@ -28,11 +28,10 @@ lti.app.use(express.static(path.join(__dirname, "..", "public")));
 lti.app.get("/health", (req, res) => res.send("OK"));
 
 // --------------------
-// 3) LTI launch: show the game page directly (prevents launch loops)
+// 3) LTI launch page (no redirect loop)
 // --------------------
 lti.onConnect((token, req, res) => {
   const ltik = req.query.ltik || "";
-
   return res.send(`
 <!doctype html>
 <html>
@@ -55,8 +54,25 @@ lti.onConnect((token, req, res) => {
 });
 
 // --------------------
-// 4) Grade update endpoint
-// The placeholder/game calls: POST /api/update?ltik=XXXX
+// 4) Helper: get a Grade API object in a version-safe way
+// --------------------
+function getGradeApi(token) {
+  // Variant A: GradeService(token) function exists
+  if (typeof lti.GradeService === "function") return lti.GradeService(token);
+
+  // Variant B: Grade(token) function exists (not constructor)
+  if (typeof lti.Grade === "function") return lti.Grade(token);
+
+  // Variant C: Grade is a constructor (rare in your case)
+  if (typeof lti.Grade === "object" && typeof lti.Grade.default === "function") {
+    return new lti.Grade.default(token);
+  }
+
+  return null;
+}
+
+// --------------------
+// 5) Grade update endpoint
 // --------------------
 lti.app.post("/api/update", async (req, res) => {
   try {
@@ -66,19 +82,39 @@ lti.app.post("/api/update", async (req, res) => {
     const score = Number(req.body.score || 0);
     const attempts = Number(req.body.attempts || 0);
 
-    // ✅ Correct Ltijs API: use lti.Grade (not GradeService)
-    const grade = new lti.Grade(token);
+    const grade = getGradeApi(token);
+    if (!grade) {
+      return res
+        .status(500)
+        .send("Grade API not available in this Ltijs build (no GradeService/Grade).");
+    }
 
-    // Reuse "Score" line item if it already exists
-    const lineItems = await grade.getLineItems();
-    let scoreLineItem = lineItems.find((li) => li.label === "Score");
+    // ---- Find or create line item "Score"
+    let scoreLineItem = null;
 
-    if (!scoreLineItem) {
+    // Some Ltijs builds provide getLineItemByLabel, others use getLineItems + filter
+    if (typeof grade.getLineItemByLabel === "function") {
+      scoreLineItem = await grade.getLineItemByLabel("Score");
+    } else if (typeof grade.getLineItems === "function") {
+      const items = await grade.getLineItems();
+      scoreLineItem = items.find((li) => li.label === "Score") || null;
+    }
+
+    if (!scoreLineItem && typeof grade.createLineItem === "function") {
       scoreLineItem = await grade.createLineItem({
         label: "Score",
         scoreMaximum: 10,
         resourceId: "score"
       });
+    }
+
+    if (!scoreLineItem || !scoreLineItem.id) {
+      return res.status(500).send("Could not create/find Score line item.");
+    }
+
+    // ---- Submit score
+    if (typeof grade.submitScore !== "function") {
+      return res.status(500).send("submitScore is not available on Grade API.");
     }
 
     await grade.submitScore(scoreLineItem.id, {
@@ -97,7 +133,7 @@ lti.app.post("/api/update", async (req, res) => {
 });
 
 // --------------------
-// 5) Start service then register Moodle platform
+// 6) Start then register Moodle platform
 // --------------------
 (async () => {
   try {
