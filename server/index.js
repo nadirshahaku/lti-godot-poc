@@ -8,6 +8,9 @@ const jwt = require("jsonwebtoken");
 // In-memory token cache (for production, consider Redis)
 const tokenCache = new Map();
 
+// Track cumulative scores per user session
+const userScores = new Map(); // key: userId, value: { score, attempts }
+
 // 1) Setup Ltijs (MongoDB is required by ltijs)
 lti.setup(
   process.env.LTI_ENCRYPTION_KEY,
@@ -49,6 +52,31 @@ lti.app.get("/test-keys", async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// Debug endpoint to check/reset user scores
+lti.app.get("/debug/scores", (req, res) => {
+  const scores = {};
+  userScores.forEach((value, key) => {
+    scores[key] = value;
+  });
+  res.json({
+    activeUsers: userScores.size,
+    scores: scores,
+    message: "To reset a user's score, POST to /debug/reset-score?userId=X"
+  });
+});
+
+lti.app.post("/debug/reset-score", (req, res) => {
+  const userId = req.query.userId;
+  if (!userId) {
+    return res.status(400).json({ error: "userId required" });
+  }
+  if (userScores.has(userId)) {
+    userScores.delete(userId);
+    return res.json({ ok: true, message: `Score reset for user ${userId}` });
+  }
+  return res.json({ ok: false, message: `No score found for user ${userId}` });
 });
 
 // 3) LTI Launch handler - STORE token in cache
@@ -156,86 +184,153 @@ lti.app.post("/api/update", validateLtik, async (req, res) => {
     console.log("Has endpoint:", !!idtoken.platformContext?.endpoint);
     console.log("Has lineitem:", !!idtoken.platformContext?.endpoint?.lineitem);
 
-    const score = Number(req.body.score || 0);
-    const attempts = Number(req.body.attempts || 0);
-    const scoreClamped = Math.max(0, Math.min(10, score));
+    const scoreFromRequest = Number(req.body.score || 0);
+    const attemptsFromRequest = Number(req.body.attempts || 1);
+    
+    // Get or initialize user's cumulative data
+    const userId = idtoken.user;
+    if (!userScores.has(userId)) {
+      userScores.set(userId, { score: 0, attempts: 0 });
+    }
+    
+    const userData = userScores.get(userId);
+    userData.score += scoreFromRequest;
+    userData.attempts += attemptsFromRequest;
+    
+    const scoreMaximum = 100;
+    // Cap the score at maximum
+    const cumulativeScore = Math.min(userData.score, scoreMaximum);
+    const totalAttempts = userData.attempts;
 
-    console.log(`Submitting grade: ${scoreClamped}/10 (attempts: ${attempts})`);
+    console.log(`User ${userId} - Cumulative: ${cumulativeScore} correct out of ${totalAttempts} attempts`);
+    console.log(`Submitting grade: ${cumulativeScore}/${scoreMaximum}`);
 
-    // Build grade object according to LTI AGS spec (v2.0)
-    // NOTE: userId should NOT be in the score object per LTI AGS spec
-    // It's determined from the access token context
-    const gradeObj = {
-      scoreGiven: scoreClamped,
-      scoreMaximum: 10,
-      activityProgress: "Completed",
+    // Build grade objects for both Score and Attempts
+    const scoreGradeObj = {
+      scoreGiven: cumulativeScore,
+      scoreMaximum: scoreMaximum,
+      activityProgress: cumulativeScore >= scoreMaximum ? "Completed" : "InProgress",
       gradingProgress: "FullyGraded",
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      comment: `Score: ${cumulativeScore} | Attempts: ${totalAttempts} | Accuracy: ${totalAttempts > 0 ? Math.round((cumulativeScore/totalAttempts)*100) : 0}%`
     };
 
-    console.log("Grade object:", JSON.stringify(gradeObj, null, 2));
+    const attemptsGradeObj = {
+      scoreGiven: totalAttempts,
+      scoreMaximum: 100, // Arbitrary max for attempts
+      activityProgress: "InProgress",
+      gradingProgress: "FullyGraded",
+      timestamp: new Date().toISOString(),
+      comment: `Total attempts made`
+    };
+
+    console.log("Score grade object:", JSON.stringify(scoreGradeObj, null, 2));
+    console.log("Attempts grade object:", JSON.stringify(attemptsGradeObj, null, 2));
     console.log("Token info for submission:");
     console.log("  - User:", idtoken.user);
     console.log("  - Platform:", idtoken.platformUrl);
     console.log("  - ClientId:", idtoken.clientId);
 
-    // Get line item from token
-    let lineItemId = idtoken?.platformContext?.endpoint?.lineitem;
+    // Get or create line items for Score and Attempts
+    let scoreLineItemId = idtoken?.platformContext?.endpoint?.lineitem;
+    let attemptsLineItemId = null;
     
-    console.log("LineItemId from token:", lineItemId);
+    console.log("Initial lineItemId from token:", scoreLineItemId);
 
-    if (!lineItemId) {
-      console.log("No lineItemId in token, attempting to fetch...");
+    // Get all line items for this resource
+    try {
+      const lineItemsResponse = await lti.Grade.getLineItems(idtoken, {
+        resourceLinkId: true
+      });
       
-      try {
-        const lineItemsResponse = await lti.Grade.getLineItems(idtoken, {
-          resourceLinkId: true
-        });
-        
-        console.log("Line items response:", lineItemsResponse);
+      console.log("Line items response:", lineItemsResponse);
 
-        if (lineItemsResponse?.lineItems?.length > 0) {
-          lineItemId = lineItemsResponse.lineItems[0].id;
-          console.log("Using existing lineItemId:", lineItemId);
-        } else {
-          console.log("Creating new line item...");
-          const created = await lti.Grade.createLineItem(idtoken, {
-            scoreMaximum: 10,
-            label: "Game Score",
-            tag: "score",
-            resourceLinkId: idtoken.platformContext?.resource?.id
-          });
-          lineItemId = created.id;
-          console.log("Created new lineItemId:", lineItemId);
+      if (lineItemsResponse?.lineItems?.length > 0) {
+        // Look for existing Score and Attempts line items
+        const items = lineItemsResponse.lineItems;
+        
+        const scoreItem = items.find(item => item.tag === 'score' || item.label?.includes('Score'));
+        const attemptsItem = items.find(item => item.tag === 'attempts' || item.label?.includes('Attempts'));
+        
+        if (scoreItem) {
+          scoreLineItemId = scoreItem.id;
+          console.log("Found existing Score lineItemId:", scoreLineItemId);
         }
-      } catch (lineItemError) {
-        console.error("Error with line item:", lineItemError.message);
-        console.error("Full error:", lineItemError);
+        
+        if (attemptsItem) {
+          attemptsLineItemId = attemptsItem.id;
+          console.log("Found existing Attempts lineItemId:", attemptsLineItemId);
+        }
       }
+
+      // Create Score line item if it doesn't exist
+      if (!scoreLineItemId) {
+        console.log("Creating Score line item...");
+        const created = await lti.Grade.createLineItem(idtoken, {
+          scoreMaximum: scoreMaximum,
+          label: "Score",
+          tag: "score",
+          resourceLinkId: idtoken.platformContext?.resource?.id
+        });
+        scoreLineItemId = created.id;
+        console.log("Created Score lineItemId:", scoreLineItemId);
+      }
+
+      // Create Attempts line item if it doesn't exist
+      if (!attemptsLineItemId) {
+        console.log("Creating Attempts line item...");
+        const created = await lti.Grade.createLineItem(idtoken, {
+          scoreMaximum: 100,
+          label: "Attempts",
+          tag: "attempts",
+          resourceLinkId: idtoken.platformContext?.resource?.id
+        });
+        attemptsLineItemId = created.id;
+        console.log("Created Attempts lineItemId:", attemptsLineItemId);
+      }
+    } catch (lineItemError) {
+      console.error("Error with line items:", lineItemError.message);
+      console.error("Full error:", lineItemError);
     }
 
-    if (!lineItemId) {
-      console.error("No lineItemId available - cannot submit grade");
+    if (!scoreLineItemId) {
+      console.error("No scoreLineItemId available - cannot submit grade");
       return res.status(400).json({ 
-        error: "No line item available for grade submission"
+        error: "No line item available for score submission"
       });
     }
 
-    // Submit the score
-    console.log("Submitting score to lineItemId:", lineItemId);
+    // Submit the scores to both line items
+    console.log("Submitting Score to lineItemId:", scoreLineItemId);
+    console.log("Submitting Attempts to lineItemId:", attemptsLineItemId);
     
     try {
-      const result = await lti.Grade.submitScore(idtoken, lineItemId, gradeObj);
+      // Submit Score
+      const scoreResult = await lti.Grade.submitScore(idtoken, scoreLineItemId, scoreGradeObj);
+      console.log("Score submission result:", scoreResult);
+
+      // Submit Attempts (if line item was created)
+      let attemptsResult = null;
+      if (attemptsLineItemId) {
+        attemptsResult = await lti.Grade.submitScore(idtoken, attemptsLineItemId, attemptsGradeObj);
+        console.log("Attempts submission result:", attemptsResult);
+      } else {
+        console.log("Attempts line item not available, skipping attempts submission");
+      }
       
-      console.log("Grade submission result:", result);
       console.log("=== Grade Update Success ===");
 
       return res.json({ 
         ok: true, 
-        score: scoreClamped,
-        attempts: attempts,
-        lineItemId: lineItemId,
-        result: result
+        score: cumulativeScore,
+        attempts: totalAttempts,
+        scoreMaximum: scoreMaximum,
+        scoreLineItemId: scoreLineItemId,
+        attemptsLineItemId: attemptsLineItemId,
+        results: {
+          score: scoreResult,
+          attempts: attemptsResult
+        }
       });
     } catch (submitError) {
       console.error("=== Grade Submission Failed ===");
