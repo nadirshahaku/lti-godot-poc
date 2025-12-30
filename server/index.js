@@ -61,22 +61,26 @@ lti.app.get("/debug/scores", (req, res) => {
     scores[key] = value;
   });
   res.json({
-    activeUsers: userScores.size,
+    activeScores: userScores.size,
     scores: scores,
-    message: "To reset a user's score, POST to /debug/reset-score?userId=X"
+    message: "Scores are tracked per platform-course-activity-user combination",
+    resetInfo: "To reset: POST to /debug/reset-score?key=<full-key>"
   });
 });
 
 lti.app.post("/debug/reset-score", (req, res) => {
-  const userId = req.query.userId;
-  if (!userId) {
-    return res.status(400).json({ error: "userId required" });
+  const key = req.query.key;
+  if (!key) {
+    return res.status(400).json({ 
+      error: "key required",
+      example: "POST /debug/reset-score?key=https://quizgametest.moodlecloud.com-9-3-4"
+    });
   }
-  if (userScores.has(userId)) {
-    userScores.delete(userId);
-    return res.json({ ok: true, message: `Score reset for user ${userId}` });
+  if (userScores.has(key)) {
+    userScores.delete(key);
+    return res.json({ ok: true, message: `Score reset for key ${key}` });
   }
-  return res.json({ ok: false, message: `No score found for user ${userId}` });
+  return res.json({ ok: false, message: `No score found for key ${key}` });
 });
 
 // 3) LTI Launch handler - STORE token in cache
@@ -187,13 +191,28 @@ lti.app.post("/api/update", validateLtik, async (req, res) => {
     const scoreFromRequest = Number(req.body.score || 0);
     const attemptsFromRequest = Number(req.body.attempts || 1);
     
-    // Get or initialize user's cumulative data
+    // Create unique key per platform + course + activity + user
     const userId = idtoken.user;
-    if (!userScores.has(userId)) {
-      userScores.set(userId, { score: 0, attempts: 0 });
+    const contextId = idtoken.platformContext?.context?.id || 'default';
+    const resourceId = idtoken.platformContext?.resource?.id || 'default';
+    const platformUrl = idtoken.iss || idtoken.platformUrl;
+    
+    // Unique key: platform-course-activity-user
+    const scoreKey = `${platformUrl}-${contextId}-${resourceId}-${userId}`;
+    
+    console.log("Score key:", scoreKey);
+    console.log("  - Platform:", platformUrl);
+    console.log("  - Course:", contextId);
+    console.log("  - Activity:", resourceId);
+    console.log("  - User:", userId);
+    
+    // Get or initialize user's cumulative data for THIS specific activity
+    if (!userScores.has(scoreKey)) {
+      userScores.set(scoreKey, { score: 0, attempts: 0 });
+      console.log("Initialized new score tracking for this activity instance");
     }
     
-    const userData = userScores.get(userId);
+    const userData = userScores.get(scoreKey);
     userData.score += scoreFromRequest;
     userData.attempts += attemptsFromRequest;
     
