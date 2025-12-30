@@ -147,14 +147,22 @@ lti.app.post("/api/update", validateLtik, async (req, res) => {
 
     console.log(`Submitting grade: ${scoreClamped}/10 (attempts: ${attempts})`);
 
-    // Build grade object according to LTI AGS spec
+    // Build grade object according to LTI AGS spec (v2.0)
+    // NOTE: userId should NOT be in the score object per LTI AGS spec
+    // It's determined from the access token context
     const gradeObj = {
-      userId: idtoken.user,
       scoreGiven: scoreClamped,
       scoreMaximum: 10,
       activityProgress: "Completed",
-      gradingProgress: "FullyGraded"
+      gradingProgress: "FullyGraded",
+      timestamp: new Date().toISOString()
     };
+
+    console.log("Grade object:", JSON.stringify(gradeObj, null, 2));
+    console.log("Token info for submission:");
+    console.log("  - User:", idtoken.user);
+    console.log("  - Platform:", idtoken.platformUrl);
+    console.log("  - ClientId:", idtoken.clientId);
 
     // Get line item from token
     let lineItemId = idtoken?.platformContext?.endpoint?.lineitem;
@@ -200,18 +208,32 @@ lti.app.post("/api/update", validateLtik, async (req, res) => {
 
     // Submit the score
     console.log("Submitting score to lineItemId:", lineItemId);
-    const result = await lti.Grade.submitScore(idtoken, lineItemId, gradeObj);
     
-    console.log("Grade submission result:", result);
-    console.log("=== Grade Update Success ===");
+    try {
+      const result = await lti.Grade.submitScore(idtoken, lineItemId, gradeObj);
+      
+      console.log("Grade submission result:", result);
+      console.log("=== Grade Update Success ===");
 
-    return res.json({ 
-      ok: true, 
-      score: scoreClamped,
-      attempts: attempts,
-      lineItemId: lineItemId,
-      result: result
-    });
+      return res.json({ 
+        ok: true, 
+        score: scoreClamped,
+        attempts: attempts,
+        lineItemId: lineItemId,
+        result: result
+      });
+    } catch (submitError) {
+      console.error("=== Grade Submission Failed ===");
+      console.error("Error message:", submitError.message);
+      console.error("Error response:", submitError.response?.body);
+      console.error("Error statusCode:", submitError.response?.statusCode);
+      console.error("Full error:", submitError);
+      
+      return res.status(500).json({ 
+        error: "Grade submission failed: " + submitError.message,
+        details: submitError.response?.body || submitError.stack
+      });
+    }
 
   } catch (err) {
     console.error("=== Grade Update Error ===");
