@@ -5,6 +5,9 @@ const express = require("express");
 const lti = require("ltijs").Provider;
 const jwt = require("jsonwebtoken");
 
+// In-memory token cache (for production, consider Redis)
+const tokenCache = new Map();
+
 // 1) Setup Ltijs (MongoDB is required by ltijs)
 lti.setup(
   process.env.LTI_ENCRYPTION_KEY,
@@ -33,7 +36,7 @@ lti.app.get("/", (req, res) => {
 
 lti.app.get("/health", (req, res) => res.send("OK"));
 
-// 3) LTI Launch handler
+// 3) LTI Launch handler - STORE token in cache
 lti.onConnect((token, req, res) => {
   const ltik = req.query.ltik || "";
 
@@ -41,6 +44,21 @@ lti.onConnect((token, req, res) => {
   console.log("User:", token.user);
   console.log("Has lineitem:", !!token.platformContext?.endpoint?.lineitem);
   console.log("Lineitem URL:", token.platformContext?.endpoint?.lineitem);
+  console.log("LTIK:", ltik);
+
+  // Store the complete token in cache using ltik as key
+  if (ltik) {
+    tokenCache.set(ltik, token);
+    console.log("Token cached successfully");
+    
+    // Auto-expire after 2 hours
+    setTimeout(() => {
+      if (tokenCache.has(ltik)) {
+        tokenCache.delete(ltik);
+        console.log("Token expired and removed from cache");
+      }
+    }, 2 * 60 * 60 * 1000);
+  }
 
   return res.send(`
 <!doctype html>
@@ -63,72 +81,41 @@ lti.onConnect((token, req, res) => {
   `);
 });
 
-// 4) Manual token validation using ltijs internal database structure
+// 4) Token validation using cache
 async function validateLtik(req, res, next) {
   try {
     const ltik = req.query.ltik || req.body.ltik;
     
     if (!ltik) {
+      console.error("No ltik provided");
       return res.status(401).send("Unauthorized: missing ltik");
     }
 
-    console.log("Validating ltik token...");
+    console.log("Validating ltik...");
+    console.log("Cache size:", tokenCache.size);
+    console.log("LTIK in cache:", tokenCache.has(ltik));
 
-    // Verify the JWT signature using the same key ltijs uses
-    let decoded;
+    // Verify JWT signature first
     try {
-      decoded = jwt.verify(ltik, process.env.LTI_ENCRYPTION_KEY);
+      jwt.verify(ltik, process.env.LTI_ENCRYPTION_KEY);
+      console.log("JWT signature verified");
     } catch (err) {
       console.error("JWT verification failed:", err.message);
       return res.status(401).send("Unauthorized: invalid token signature");
     }
 
-    console.log("Decoded and verified ltik payload:", decoded);
-
-    // Query the database using the signature field (s) which is the unique key
-    // ltijs stores tokens with a hash based on platform+context+user
-    const tokenQuery = {
-      platformUrl: decoded.platformUrl,
-      clientId: decoded.clientId,
-      deploymentId: decoded.deploymentId,
-      user: decoded.user,
-      contextId: decoded.contextId
-    };
-
-    console.log("Querying database with:", tokenQuery);
-
-    let tokenData = await lti.Database.Get(false, "idtoken", tokenQuery);
+    // Get token from cache
+    const tokenData = tokenCache.get(ltik);
 
     if (!tokenData) {
-      // Try alternative query without contextId (some ltijs versions store differently)
-      console.log("First query failed, trying without full contextId...");
-      delete tokenQuery.contextId;
-      tokenData = await lti.Database.Get(false, "idtoken", tokenQuery);
-    }
-
-    if (!tokenData) {
-      // Try getting all tokens for this user and filtering
-      console.log("Trying to get all tokens for user...");
-      const allTokens = await lti.Database.Get(false, "idtoken", {
-        platformUrl: decoded.platformUrl,
-        clientId: decoded.clientId,
-        user: decoded.user
-      });
-      
-      if (allTokens) {
-        tokenData = allTokens;
-        console.log("Found token via broader query");
-      }
-    }
-
-    if (!tokenData) {
-      console.error("Token not found in database after all attempts");
-      console.log("Database might be empty or token expired");
+      console.error("Token not found in cache");
+      console.log("Available tokens in cache:", Array.from(tokenCache.keys()).map(k => k.substring(0, 20) + '...'));
       return res.status(401).send("Unauthorized: token not found or expired");
     }
 
-    console.log("Token retrieved successfully");
-    console.log("Token has endpoint:", !!tokenData.platformContext?.endpoint);
+    console.log("Token retrieved from cache successfully");
+    console.log("Token user:", tokenData.user);
+    console.log("Has endpoint:", !!tokenData.platformContext?.endpoint);
     
     // Attach token to res.locals for the route handler
     res.locals.token = tokenData;
@@ -141,7 +128,7 @@ async function validateLtik(req, res, next) {
   }
 }
 
-// 5) Grade endpoint - Using custom validation middleware
+// 5) Grade endpoint
 lti.app.post("/api/update", validateLtik, async (req, res) => {
   try {
     console.log("=== Grade Update Request ===");
@@ -150,7 +137,6 @@ lti.app.post("/api/update", validateLtik, async (req, res) => {
     const idtoken = res.locals.token;
 
     console.log("Token user:", idtoken.user);
-    console.log("Token structure:", Object.keys(idtoken));
     console.log("Has platformContext:", !!idtoken.platformContext);
     console.log("Has endpoint:", !!idtoken.platformContext?.endpoint);
     console.log("Has lineitem:", !!idtoken.platformContext?.endpoint?.lineitem);
