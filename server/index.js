@@ -3,6 +3,7 @@ require("dotenv").config();
 const path = require("path");
 const express = require("express");
 const lti = require("ltijs").Provider;
+const jwt = require("jsonwebtoken");
 
 // 1) Setup Ltijs (MongoDB is required by ltijs)
 lti.setup(
@@ -62,7 +63,7 @@ lti.onConnect((token, req, res) => {
   `);
 });
 
-// 4) Create a manual token validation middleware
+// 4) Manual token validation using ltijs internal database structure
 async function validateLtik(req, res, next) {
   try {
     const ltik = req.query.ltik || req.body.ltik;
@@ -73,32 +74,61 @@ async function validateLtik(req, res, next) {
 
     console.log("Validating ltik token...");
 
-    // Decode the JWT manually to extract the data
-    const jwt = require('jsonwebtoken');
-    const decoded = jwt.decode(ltik);
-    
-    if (!decoded) {
-      console.error("Failed to decode ltik");
-      return res.status(401).send("Unauthorized: invalid ltik format");
+    // Verify the JWT signature using the same key ltijs uses
+    let decoded;
+    try {
+      decoded = jwt.verify(ltik, process.env.LTI_ENCRYPTION_KEY);
+    } catch (err) {
+      console.error("JWT verification failed:", err.message);
+      return res.status(401).send("Unauthorized: invalid token signature");
     }
 
-    console.log("Decoded ltik payload:", decoded);
+    console.log("Decoded and verified ltik payload:", decoded);
 
-    // Query the database for the stored token
-    const tokenData = await lti.Database.Get(false, "idtoken", {
-      iss: decoded.platformUrl,
+    // Query the database using the signature field (s) which is the unique key
+    // ltijs stores tokens with a hash based on platform+context+user
+    const tokenQuery = {
+      platformUrl: decoded.platformUrl,
       clientId: decoded.clientId,
       deploymentId: decoded.deploymentId,
       user: decoded.user,
       contextId: decoded.contextId
-    });
+    };
+
+    console.log("Querying database with:", tokenQuery);
+
+    let tokenData = await lti.Database.Get(false, "idtoken", tokenQuery);
 
     if (!tokenData) {
-      console.error("Token not found in database");
-      return res.status(401).send("Unauthorized: token not found");
+      // Try alternative query without contextId (some ltijs versions store differently)
+      console.log("First query failed, trying without full contextId...");
+      delete tokenQuery.contextId;
+      tokenData = await lti.Database.Get(false, "idtoken", tokenQuery);
+    }
+
+    if (!tokenData) {
+      // Try getting all tokens for this user and filtering
+      console.log("Trying to get all tokens for user...");
+      const allTokens = await lti.Database.Get(false, "idtoken", {
+        platformUrl: decoded.platformUrl,
+        clientId: decoded.clientId,
+        user: decoded.user
+      });
+      
+      if (allTokens) {
+        tokenData = allTokens;
+        console.log("Found token via broader query");
+      }
+    }
+
+    if (!tokenData) {
+      console.error("Token not found in database after all attempts");
+      console.log("Database might be empty or token expired");
+      return res.status(401).send("Unauthorized: token not found or expired");
     }
 
     console.log("Token retrieved successfully");
+    console.log("Token has endpoint:", !!tokenData.platformContext?.endpoint);
     
     // Attach token to res.locals for the route handler
     res.locals.token = tokenData;
@@ -106,6 +136,7 @@ async function validateLtik(req, res, next) {
 
   } catch (err) {
     console.error("Token validation error:", err.message);
+    console.error("Stack:", err.stack);
     return res.status(401).send("Unauthorized: " + err.message);
   }
 }
@@ -119,7 +150,10 @@ lti.app.post("/api/update", validateLtik, async (req, res) => {
     const idtoken = res.locals.token;
 
     console.log("Token user:", idtoken.user);
+    console.log("Token structure:", Object.keys(idtoken));
+    console.log("Has platformContext:", !!idtoken.platformContext);
     console.log("Has endpoint:", !!idtoken.platformContext?.endpoint);
+    console.log("Has lineitem:", !!idtoken.platformContext?.endpoint?.lineitem);
 
     const score = Number(req.body.score || 0);
     const attempts = Number(req.body.attempts || 0);
