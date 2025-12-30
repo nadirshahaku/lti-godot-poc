@@ -62,47 +62,61 @@ lti.onConnect((token, req, res) => {
   `);
 });
 
-// 4) Grade endpoint - Using ltijs built-in token validation
-lti.app.post("/api/update", async (req, res) => {
+// 4) Create a manual token validation middleware
+async function validateLtik(req, res, next) {
+  try {
+    const ltik = req.query.ltik || req.body.ltik;
+    
+    if (!ltik) {
+      return res.status(401).send("Unauthorized: missing ltik");
+    }
+
+    console.log("Validating ltik token...");
+
+    // Decode the JWT manually to extract the data
+    const jwt = require('jsonwebtoken');
+    const decoded = jwt.decode(ltik);
+    
+    if (!decoded) {
+      console.error("Failed to decode ltik");
+      return res.status(401).send("Unauthorized: invalid ltik format");
+    }
+
+    console.log("Decoded ltik payload:", decoded);
+
+    // Query the database for the stored token
+    const tokenData = await lti.Database.Get(false, "idtoken", {
+      iss: decoded.platformUrl,
+      clientId: decoded.clientId,
+      deploymentId: decoded.deploymentId,
+      user: decoded.user,
+      contextId: decoded.contextId
+    });
+
+    if (!tokenData) {
+      console.error("Token not found in database");
+      return res.status(401).send("Unauthorized: token not found");
+    }
+
+    console.log("Token retrieved successfully");
+    
+    // Attach token to res.locals for the route handler
+    res.locals.token = tokenData;
+    next();
+
+  } catch (err) {
+    console.error("Token validation error:", err.message);
+    return res.status(401).send("Unauthorized: " + err.message);
+  }
+}
+
+// 5) Grade endpoint - Using custom validation middleware
+lti.app.post("/api/update", validateLtik, async (req, res) => {
   try {
     console.log("=== Grade Update Request ===");
     console.log("Body:", req.body);
 
-    // Get ltik from query parameter
-    const ltik = req.query.ltik;
-    if (!ltik) {
-      console.error("No ltik in query");
-      return res.status(401).send("Unauthorized: missing ltik");
-    }
-
-    console.log("Validating ltik...");
-
-    // Use ltijs to verify the ltik token
-    let idtoken;
-    try {
-      // Decode and verify the ltik JWT
-      const decoded = await lti.verifyToken(ltik);
-      console.log("Decoded ltik:", decoded);
-
-      // Get the full token from the database using the decoded info
-      idtoken = await lti.Database.Get(false, "idtoken", {
-        iss: decoded.platformUrl,
-        clientId: decoded.clientId,
-        deploymentId: decoded.deploymentId,
-        user: decoded.user,
-        contextId: decoded.contextId
-      });
-
-      console.log("Got token from database");
-    } catch (err) {
-      console.error("Error validating ltik:", err.message);
-      return res.status(401).send("Unauthorized: invalid ltik");
-    }
-
-    if (!idtoken) {
-      console.error("No token found in database");
-      return res.status(401).send("Unauthorized: token not found");
-    }
+    const idtoken = res.locals.token;
 
     console.log("Token user:", idtoken.user);
     console.log("Has endpoint:", !!idtoken.platformContext?.endpoint);
@@ -122,7 +136,7 @@ lti.app.post("/api/update", async (req, res) => {
       gradingProgress: "FullyGraded"
     };
 
-    // Get line item from token (it's already there from your logs!)
+    // Get line item from token
     let lineItemId = idtoken?.platformContext?.endpoint?.lineitem;
     
     console.log("LineItemId from token:", lineItemId);
@@ -153,6 +167,7 @@ lti.app.post("/api/update", async (req, res) => {
         }
       } catch (lineItemError) {
         console.error("Error with line item:", lineItemError.message);
+        console.error("Full error:", lineItemError);
       }
     }
 
@@ -189,7 +204,7 @@ lti.app.post("/api/update", async (req, res) => {
   }
 });
 
-// 5) Start then register platform
+// 6) Start then register platform
 (async () => {
   try {
     const port = process.env.PORT || 3000;
