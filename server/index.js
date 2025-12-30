@@ -36,6 +36,21 @@ lti.app.get("/", (req, res) => {
 
 lti.app.get("/health", (req, res) => res.send("OK"));
 
+// Test endpoint to verify keys are available
+lti.app.get("/test-keys", async (req, res) => {
+  try {
+    const platform = await lti.getPlatform("https://quizgametest.moodlecloud.com", "GzMJPZMQfLMVRts", "2");
+    res.json({
+      keysEndpoint: "/keys",
+      fullKeysUrl: "https://lti-godot-poc.onrender.com/keys",
+      platformRegistered: !!platform,
+      message: "Your tool's public keys are available at the 'fullKeysUrl' above. Configure this URL in Moodle."
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // 3) LTI Launch handler - STORE token in cache
 lti.onConnect((token, req, res) => {
   const ltik = req.query.ltik || "";
