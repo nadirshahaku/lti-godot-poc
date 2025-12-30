@@ -38,8 +38,8 @@ lti.onConnect((token, req, res) => {
 
   console.log("=== LTI Launch ===");
   console.log("User:", token.user);
-  console.log("Context:", token.platformContext);
-  console.log("Endpoint:", token.platformContext?.endpoint);
+  console.log("Has lineitem:", !!token.platformContext?.endpoint?.lineitem);
+  console.log("Lineitem URL:", token.platformContext?.endpoint?.lineitem);
 
   return res.send(`
 <!doctype html>
@@ -62,12 +62,11 @@ lti.onConnect((token, req, res) => {
   `);
 });
 
-// 4) Grade endpoint - FIXED: Manual ltik validation
+// 4) Grade endpoint - Using ltijs built-in token validation
 lti.app.post("/api/update", async (req, res) => {
   try {
     console.log("=== Grade Update Request ===");
     console.log("Body:", req.body);
-    console.log("Query:", req.query);
 
     // Get ltik from query parameter
     const ltik = req.query.ltik;
@@ -76,22 +75,37 @@ lti.app.post("/api/update", async (req, res) => {
       return res.status(401).send("Unauthorized: missing ltik");
     }
 
-    // Validate ltik and get token
+    console.log("Validating ltik...");
+
+    // Use ltijs to verify the ltik token
     let idtoken;
     try {
-      idtoken = await lti.getIdToken(res.locals.ltik || ltik);
+      // Decode and verify the ltik JWT
+      const decoded = await lti.verifyToken(ltik);
+      console.log("Decoded ltik:", decoded);
+
+      // Get the full token from the database using the decoded info
+      idtoken = await lti.Database.Get(false, "idtoken", {
+        iss: decoded.platformUrl,
+        clientId: decoded.clientId,
+        deploymentId: decoded.deploymentId,
+        user: decoded.user,
+        contextId: decoded.contextId
+      });
+
+      console.log("Got token from database");
     } catch (err) {
-      console.error("Error getting token from ltik:", err);
+      console.error("Error validating ltik:", err.message);
       return res.status(401).send("Unauthorized: invalid ltik");
     }
 
     if (!idtoken) {
-      console.error("No token found for ltik");
-      return res.status(401).send("Unauthorized: invalid token");
+      console.error("No token found in database");
+      return res.status(401).send("Unauthorized: token not found");
     }
 
     console.log("Token user:", idtoken.user);
-    console.log("Token platform context:", idtoken.platformContext);
+    console.log("Has endpoint:", !!idtoken.platformContext?.endpoint);
 
     const score = Number(req.body.score || 0);
     const attempts = Number(req.body.attempts || 0);
@@ -108,29 +122,25 @@ lti.app.post("/api/update", async (req, res) => {
       gradingProgress: "FullyGraded"
     };
 
-    // Try to get line item from token first
+    // Get line item from token (it's already there from your logs!)
     let lineItemId = idtoken?.platformContext?.endpoint?.lineitem;
     
-    console.log("Initial lineItemId:", lineItemId);
+    console.log("LineItemId from token:", lineItemId);
 
-    // If no line item in token, try to find or create one
     if (!lineItemId) {
-      console.log("No lineItemId in token, fetching line items...");
+      console.log("No lineItemId in token, attempting to fetch...");
       
       try {
-        // Get all line items for this resource link
         const lineItemsResponse = await lti.Grade.getLineItems(idtoken, {
           resourceLinkId: true
         });
         
         console.log("Line items response:", lineItemsResponse);
 
-        if (lineItemsResponse && lineItemsResponse.lineItems && lineItemsResponse.lineItems.length > 0) {
-          // Use the first line item
+        if (lineItemsResponse?.lineItems?.length > 0) {
           lineItemId = lineItemsResponse.lineItems[0].id;
           console.log("Using existing lineItemId:", lineItemId);
         } else {
-          // Create a new line item
           console.log("Creating new line item...");
           const created = await lti.Grade.createLineItem(idtoken, {
             scoreMaximum: 10,
@@ -142,11 +152,15 @@ lti.app.post("/api/update", async (req, res) => {
           console.log("Created new lineItemId:", lineItemId);
         }
       } catch (lineItemError) {
-        console.error("Error getting/creating line item:", lineItemError);
-        console.error("Line item error details:", lineItemError.message);
-        // If we can't get/create line item, try submitting without it
-        // Some platforms allow this
+        console.error("Error with line item:", lineItemError.message);
       }
+    }
+
+    if (!lineItemId) {
+      console.error("No lineItemId available - cannot submit grade");
+      return res.status(400).json({ 
+        error: "No line item available for grade submission"
+      });
     }
 
     // Submit the score
@@ -160,14 +174,14 @@ lti.app.post("/api/update", async (req, res) => {
       ok: true, 
       score: scoreClamped,
       attempts: attempts,
-      lineItemId: lineItemId
+      lineItemId: lineItemId,
+      result: result
     });
 
   } catch (err) {
     console.error("=== Grade Update Error ===");
     console.error("Error message:", err?.message);
     console.error("Error stack:", err?.stack);
-    console.error("Full error:", err);
     return res.status(500).json({ 
       error: err?.message || String(err),
       details: err?.stack
