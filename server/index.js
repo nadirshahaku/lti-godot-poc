@@ -62,17 +62,32 @@ lti.onConnect((token, req, res) => {
   `);
 });
 
-// 4) Grade endpoint - CRITICAL: Use ltijs middleware to validate ltik
-lti.app.post("/api/update", lti.appRoute(), async (req, res) => {
+// 4) Grade endpoint - FIXED: Manual ltik validation
+lti.app.post("/api/update", async (req, res) => {
   try {
     console.log("=== Grade Update Request ===");
     console.log("Body:", req.body);
+    console.log("Query:", req.query);
 
-    // Get the validated token from ltijs middleware
-    const idtoken = res.locals.token;
+    // Get ltik from query parameter
+    const ltik = req.query.ltik;
+    if (!ltik) {
+      console.error("No ltik in query");
+      return res.status(401).send("Unauthorized: missing ltik");
+    }
+
+    // Validate ltik and get token
+    let idtoken;
+    try {
+      idtoken = await lti.getIdToken(res.locals.ltik || ltik);
+    } catch (err) {
+      console.error("Error getting token from ltik:", err);
+      return res.status(401).send("Unauthorized: invalid ltik");
+    }
+
     if (!idtoken) {
-      console.error("No token found in res.locals");
-      return res.status(401).send("Unauthorized: missing/invalid ltik");
+      console.error("No token found for ltik");
+      return res.status(401).send("Unauthorized: invalid token");
     }
 
     console.log("Token user:", idtoken.user);
@@ -128,6 +143,7 @@ lti.app.post("/api/update", lti.appRoute(), async (req, res) => {
         }
       } catch (lineItemError) {
         console.error("Error getting/creating line item:", lineItemError);
+        console.error("Line item error details:", lineItemError.message);
         // If we can't get/create line item, try submitting without it
         // Some platforms allow this
       }
@@ -149,11 +165,12 @@ lti.app.post("/api/update", lti.appRoute(), async (req, res) => {
 
   } catch (err) {
     console.error("=== Grade Update Error ===");
-    console.error("Error details:", err);
-    console.error("Error stack:", err.stack);
+    console.error("Error message:", err?.message);
+    console.error("Error stack:", err?.stack);
+    console.error("Full error:", err);
     return res.status(500).json({ 
       error: err?.message || String(err),
-      details: err.stack
+      details: err?.stack
     });
   }
 });
