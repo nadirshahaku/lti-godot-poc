@@ -9,7 +9,7 @@ const jwt = require("jsonwebtoken");
 const tokenCache = new Map();
 
 // Track cumulative scores per user session
-const userScores = new Map(); // key: userId, value: { score, attempts }
+const userScores = new Map(); // key: platform-course-activity-user, value: { score, attempts }
 
 // 1) Setup Ltijs (MongoDB is required by ltijs)
 lti.setup(
@@ -114,14 +114,15 @@ lti.onConnect((token, req, res) => {
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>Godot LTI POC</title>
+  <style>
+    body { margin: 0; padding: 0; overflow: hidden; }
+    iframe { border: none; }
+  </style>
 </head>
-<body style="font-family:sans-serif;margin:16px;">
-  <h2>Godot LTI POC</h2>
-  <p>Game loads below:</p>
-
+<body>
   <iframe
     src="/game/index.html?ltik=${encodeURIComponent(ltik)}"
-    style="width:960px;height:600px;border:1px solid #ccc;border-radius:8px;"
+    style="width:100vw;height:100vh;border:none;"
   ></iframe>
 </body>
 </html>
@@ -190,6 +191,7 @@ lti.app.post("/api/update", validateLtik, async (req, res) => {
 
     const scoreFromRequest = Number(req.body.score || 0);
     const attemptsFromRequest = Number(req.body.attempts || 1);
+    const isExit = req.body.isExit || false;
     
     // Create unique key per platform + course + activity + user
     const userId = idtoken.user;
@@ -201,6 +203,7 @@ lti.app.post("/api/update", validateLtik, async (req, res) => {
     const scoreKey = `${platformUrl}-${contextId}-${resourceId}-${userId}`;
     
     console.log("Score key:", scoreKey);
+    console.log("Is Exit:", isExit);
     console.log("  - Platform:", platformUrl);
     console.log("  - Course:", contextId);
     console.log("  - Activity:", resourceId);
@@ -213,8 +216,15 @@ lti.app.post("/api/update", validateLtik, async (req, res) => {
     }
     
     const userData = userScores.get(scoreKey);
-    userData.score += scoreFromRequest;
-    userData.attempts += attemptsFromRequest;
+    
+    // Only increment if NOT an exit action
+    if (!isExit) {
+      userData.score += scoreFromRequest;
+      userData.attempts += attemptsFromRequest;
+      console.log("Incremented score and attempts");
+    } else {
+      console.log("Exit action - not incrementing score/attempts");
+    }
     
     const scoreMaximum = 100;
     // Cap the score at maximum
