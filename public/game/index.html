@@ -2,15 +2,393 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>Game Placeholder</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Medical Diagnosis Training</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+
+    .container {
+      background: white;
+      border-radius: 20px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+      max-width: 900px;
+      width: 100%;
+      overflow: hidden;
+    }
+
+    .header {
+      background: linear-gradient(135deg, #00b4db 0%, #0083b0 100%);
+      color: white;
+      padding: 30px;
+      text-align: center;
+    }
+
+    .header h1 {
+      font-size: 28px;
+      margin-bottom: 8px;
+      font-weight: 600;
+    }
+
+    .header p {
+      font-size: 14px;
+      opacity: 0.9;
+    }
+
+    .stats-bar {
+      display: flex;
+      justify-content: space-around;
+      background: #f8f9fa;
+      padding: 20px;
+      border-bottom: 2px solid #e9ecef;
+    }
+
+    .stat {
+      text-align: center;
+    }
+
+    .stat-label {
+      font-size: 12px;
+      color: #6c757d;
+      text-transform: uppercase;
+      font-weight: 600;
+      margin-bottom: 5px;
+    }
+
+    .stat-value {
+      font-size: 32px;
+      font-weight: 700;
+      color: #495057;
+    }
+
+    .stat-value.correct { color: #28a745; }
+    .stat-value.attempts { color: #007bff; }
+    .stat-value.accuracy { color: #ffc107; }
+
+    .content {
+      padding: 40px;
+    }
+
+    .scenario {
+      background: #f8f9fa;
+      border-left: 4px solid #007bff;
+      padding: 25px;
+      border-radius: 8px;
+      margin-bottom: 30px;
+    }
+
+    .scenario h2 {
+      color: #007bff;
+      font-size: 20px;
+      margin-bottom: 15px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .scenario-icon {
+      width: 32px;
+      height: 32px;
+      background: #007bff;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-size: 18px;
+    }
+
+    .scenario p {
+      line-height: 1.8;
+      color: #495057;
+      font-size: 16px;
+    }
+
+    .vital-signs {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 15px;
+      margin-top: 20px;
+    }
+
+    .vital {
+      background: white;
+      padding: 15px;
+      border-radius: 8px;
+      border: 1px solid #dee2e6;
+    }
+
+    .vital-label {
+      font-size: 12px;
+      color: #6c757d;
+      text-transform: uppercase;
+      margin-bottom: 5px;
+    }
+
+    .vital-value {
+      font-size: 20px;
+      font-weight: 700;
+      color: #dc3545;
+    }
+
+    .question {
+      background: #fff3cd;
+      border-left: 4px solid #ffc107;
+      padding: 20px;
+      border-radius: 8px;
+      margin-bottom: 30px;
+    }
+
+    .question h3 {
+      color: #856404;
+      font-size: 18px;
+      margin-bottom: 10px;
+    }
+
+    .actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 15px;
+      margin-bottom: 20px;
+    }
+
+    .btn {
+      padding: 18px 30px;
+      border: none;
+      border-radius: 10px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+    }
+
+    .btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(0,0,0,0.15);
+    }
+
+    .btn:active {
+      transform: translateY(0);
+    }
+
+    .btn-correct {
+      background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+      color: white;
+    }
+
+    .btn-incorrect {
+      background: linear-gradient(135deg, #dc3545 0%, #c82333 100%);
+      color: white;
+    }
+
+    .btn-exit {
+      background: linear-gradient(135deg, #6c757d 0%, #5a6268 100%);
+      color: white;
+      grid-column: 1 / -1;
+    }
+
+    .icon {
+      font-size: 20px;
+    }
+
+    .feedback {
+      padding: 15px 20px;
+      border-radius: 8px;
+      margin-top: 15px;
+      display: none;
+      animation: slideIn 0.3s ease;
+    }
+
+    @keyframes slideIn {
+      from {
+        opacity: 0;
+        transform: translateY(-10px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .feedback.show {
+      display: block;
+    }
+
+    .feedback.correct {
+      background: #d4edda;
+      color: #155724;
+      border-left: 4px solid #28a745;
+    }
+
+    .feedback.incorrect {
+      background: #f8d7da;
+      color: #721c24;
+      border-left: 4px solid #dc3545;
+    }
+
+    .progress-bar {
+      height: 8px;
+      background: #e9ecef;
+      border-radius: 10px;
+      overflow: hidden;
+      margin-bottom: 20px;
+    }
+
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #28a745 0%, #20c997 100%);
+      width: 0%;
+      transition: width 0.5s ease;
+    }
+  </style>
 </head>
-<body style="font-family:sans-serif;padding:16px;">
-  <h3>Game Placeholder</h3>
-  <p>These buttons simulate clicks from the Godot game.</p>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>🏥 Medical Diagnosis Training</h1>
+      <p>Emergency Department Simulation</p>
+    </div>
+
+    <div class="stats-bar">
+      <div class="stat">
+        <div class="stat-label">Correct</div>
+        <div class="stat-value correct" id="scoreDisplay">0</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Attempts</div>
+        <div class="stat-value attempts" id="attemptsDisplay">0</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Accuracy</div>
+        <div class="stat-value accuracy" id="accuracyDisplay">0%</div>
+      </div>
+    </div>
+
+    <div class="content">
+      <div class="progress-bar">
+        <div class="progress-fill" id="progressBar"></div>
+      </div>
+
+      <div class="scenario">
+        <h2>
+          <div class="scenario-icon">👤</div>
+          Patient Case
+        </h2>
+        <p>
+          A 45-year-old male presents to the emergency department with sudden onset chest pain 
+          radiating to the left arm. Patient reports feeling lightheaded and nauseous. 
+          Pain started 30 minutes ago while at rest.
+        </p>
+        
+        <div class="vital-signs">
+          <div class="vital">
+            <div class="vital-label">Heart Rate</div>
+            <div class="vital-value">110 bpm</div>
+          </div>
+          <div class="vital">
+            <div class="vital-label">BP</div>
+            <div class="vital-value">160/95</div>
+          </div>
+          <div class="vital">
+            <div class="vital-label">SpO₂</div>
+            <div class="vital-value">94%</div>
+          </div>
+          <div class="vital">
+            <div class="vital-label">Temp</div>
+            <div class="vital-value">37.2°C</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="question">
+        <h3>⚕️ What is your initial diagnosis?</h3>
+      </div>
+
+      <div class="actions">
+        <button class="btn btn-correct" onclick="handleAnswer(true)">
+          Acute Myocardial Infarction
+        </button>
+        <button class="btn btn-incorrect" onclick="handleAnswer(false)">
+          Gastroesophageal Reflux
+        </button>
+        <button class="btn btn-exit" onclick="handleExit()">
+          <span class="icon">🚪</span>
+          <span>Complete Training Session</span>
+        </button>
+      </div>
+
+      <div class="feedback" id="feedback"></div>
+    </div>
+  </div>
 
   <script>
     const params = new URLSearchParams(window.location.search);
     const ltik = params.get("ltik");
+
+    let localScore = 0;
+    let localAttempts = 0;
+
+    // Audio context for sound effects
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
+    // Success sound - cheerful ascending tones
+    function playSuccessSound() {
+      const now = audioContext.currentTime;
+      const oscillator = audioContext.createOscillator();
+      const gainNode = audioContext.createGain();
+      
+      oscillator.connect(gainNode);
+      gainNode.connect(audioContext.destination);
+      
+      oscillator.type = 'sine';
+      oscillator.frequency.setValueAtTime(523.25, now); // C5
+      oscillator.frequency.setValueAtTime(659.25, now + 0.1); // E5
+      oscillator.frequency.setValueAtTime(783.99, now + 0.2); // G5
+      
+      gainNode.gain.setValueAtTime(0.3, now);
+      gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.4);
+      
+      oscillator.start(now);
+      oscillator.stop(now + 0.4);
+    }
+
+    // Error sound - descending buzzer
+    function playErrorSound() {
+      const now = audioContext.currentTime;
+      const oscillator = audioContext.createOscillator();
+      const gainNode = audioContext.createGain();
+      
+      oscillator.connect(gainNode);
+      gainNode.connect(audioContext.destination);
+      
+      oscillator.type = 'sawtooth';
+      oscillator.frequency.setValueAtTime(400, now);
+      oscillator.frequency.exponentialRampToValueAtTime(200, now + 0.3);
+      
+      gainNode.gain.setValueAtTime(0.2, now);
+      gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.3);
+      
+      oscillator.start(now);
+      oscillator.stop(now + 0.3);
+    }
 
     async function send(score, attempts, isExit) {
       const r = await fetch("/api/update?ltik=" + encodeURIComponent(ltik), {
@@ -18,21 +396,66 @@
         headers: {"Content-Type":"application/json"},
         body: JSON.stringify({ score, attempts, isExit: !!isExit })
       });
-      if (!r.ok) alert(await r.text());
-      if (isExit) window.parent.close();
+      
+      if (!r.ok) {
+        alert("Error: " + await r.text());
+        return null;
+      }
+      
+      if (isExit) {
+        showFeedback("Training session completed! Your scores have been saved.", "correct");
+        setTimeout(() => {
+          window.parent.close();
+        }, 2000);
+      }
+      
+      return await r.json();
     }
+
+    function showFeedback(message, type) {
+      const feedback = document.getElementById('feedback');
+      feedback.textContent = message;
+      feedback.className = 'feedback show ' + type;
+      
+      setTimeout(() => {
+        feedback.classList.remove('show');
+      }, 3000);
+    }
+
+    function updateStats() {
+      document.getElementById('scoreDisplay').textContent = localScore;
+      document.getElementById('attemptsDisplay').textContent = localAttempts;
+      
+      const accuracy = localAttempts > 0 ? Math.round((localScore / localAttempts) * 100) : 0;
+      document.getElementById('accuracyDisplay').textContent = accuracy + '%';
+      
+      const progress = Math.min((localScore / 100) * 100, 100);
+      document.getElementById('progressBar').style.width = progress + '%';
+    }
+
+    async function handleAnswer(isCorrect) {
+      if (isCorrect) {
+        playSuccessSound();
+        localScore++;
+        localAttempts++;
+        showFeedback("✓ Correct! This patient shows classic signs of acute myocardial infarction requiring immediate intervention.", "correct");
+        await send(1, 1, false);
+      } else {
+        playErrorSound();
+        localAttempts++;
+        showFeedback("✗ Incorrect. The symptoms suggest cardiac origin, not GI. Consider ECG and cardiac enzymes.", "incorrect");
+        await send(0, 1, false);
+      }
+      
+      updateStats();
+    }
+
+    async function handleExit() {
+      await send(0, 0, true);
+    }
+
+    // Initialize display
+    updateStats();
   </script>
-
-  <button onclick="send(1,1,false)">
-    Simulate RIGHT (score=1, attempts=1)
-  </button>
-
-  <button onclick="send(0,1,false)" style="margin-left:8px;">
-    Simulate WRONG (score=0, attempts=1)
-  </button>
-
-  <button onclick="send(0,0,true)" style="margin-left:8px;">
-    Simulate EXIT
-  </button>
 </body>
 </html>
