@@ -266,7 +266,11 @@ lti.app.post("/api/update", validateLtik, async (req, res) => {
     
     console.log("Initial lineItemId from token:", scoreLineItemId);
 
-    // Get all line items for this resource
+    // IMPORTANT: Always use the lineitem from token for the main score
+    // This is the activity's grade column (e.g., "TestPOC1")
+    // We should NOT create a new "Score" line item
+
+    // Get all line items for this resource to find the Attempts column
     try {
       const lineItemsResponse = await lti.Grade.getLineItems(idtoken, {
         resourceLinkId: true
@@ -275,34 +279,14 @@ lti.app.post("/api/update", validateLtik, async (req, res) => {
       console.log("Line items response:", lineItemsResponse);
 
       if (lineItemsResponse?.lineItems?.length > 0) {
-        // Look for existing Score and Attempts line items
+        // Look for existing Attempts line item only
         const items = lineItemsResponse.lineItems;
-        
-        const scoreItem = items.find(item => item.tag === 'score' || item.label?.includes('Score'));
         const attemptsItem = items.find(item => item.tag === 'attempts' || item.label?.includes('Attempts'));
-        
-        if (scoreItem) {
-          scoreLineItemId = scoreItem.id;
-          console.log("Found existing Score lineItemId:", scoreLineItemId);
-        }
         
         if (attemptsItem) {
           attemptsLineItemId = attemptsItem.id;
           console.log("Found existing Attempts lineItemId:", attemptsLineItemId);
         }
-      }
-
-      // Create Score line item if it doesn't exist
-      if (!scoreLineItemId) {
-        console.log("Creating Score line item...");
-        const created = await lti.Grade.createLineItem(idtoken, {
-          scoreMaximum: scoreMaximum,
-          label: "Score",
-          tag: "score",
-          resourceLinkId: idtoken.platformContext?.resource?.id
-        });
-        scoreLineItemId = created.id;
-        console.log("Created Score lineItemId:", scoreLineItemId);
       }
 
       // Create Attempts line item if it doesn't exist
