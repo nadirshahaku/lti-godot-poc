@@ -266,11 +266,7 @@ lti.app.post("/api/update", validateLtik, async (req, res) => {
     
     console.log("Initial lineItemId from token:", scoreLineItemId);
 
-    // IMPORTANT: Always use the lineitem from token for the main score
-    // This is the activity's grade column (e.g., "TestPOC1")
-    // We should NOT create a new "Score" line item
-
-    // Get all line items for this resource to find the Attempts column
+    // Get all line items for this resource
     try {
       const lineItemsResponse = await lti.Grade.getLineItems(idtoken, {
         resourceLinkId: true
@@ -279,14 +275,42 @@ lti.app.post("/api/update", validateLtik, async (req, res) => {
       console.log("Line items response:", lineItemsResponse);
 
       if (lineItemsResponse?.lineItems?.length > 0) {
-        // Look for existing Attempts line item only
         const items = lineItemsResponse.lineItems;
-        const attemptsItem = items.find(item => item.tag === 'attempts' || item.label?.includes('Attempts'));
+        console.log("Found line items:", items.map(i => ({ id: i.id, label: i.label, tag: i.tag })));
         
+        // Find the main activity line item (the one WITHOUT a tag, or the first one)
+        // This is the original "TestPOC1" column
+        if (!scoreLineItemId) {
+          // Try to find line item without tag (this is usually the main activity grade)
+          const mainItem = items.find(item => !item.tag || item.tag === 'score');
+          if (mainItem) {
+            scoreLineItemId = mainItem.id;
+            console.log("Found main activity lineItemId:", scoreLineItemId);
+          } else {
+            // If no untagged item found, use the first one that's not "attempts"
+            const nonAttemptsItem = items.find(item => item.tag !== 'attempts');
+            if (nonAttemptsItem) {
+              scoreLineItemId = nonAttemptsItem.id;
+              console.log("Using first non-attempts lineItemId:", scoreLineItemId);
+            }
+          }
+        }
+        
+        // Find the Attempts line item
+        const attemptsItem = items.find(item => item.tag === 'attempts');
         if (attemptsItem) {
           attemptsLineItemId = attemptsItem.id;
           console.log("Found existing Attempts lineItemId:", attemptsLineItemId);
         }
+      }
+
+      // If still no score line item found, we have a problem
+      if (!scoreLineItemId) {
+        console.error("CRITICAL: No score line item found in token or line items list");
+        console.error("Available line items:", lineItemsResponse?.lineItems);
+        return res.status(400).json({ 
+          error: "No line item available for score submission. This activity may not be configured for grading."
+        });
       }
 
       // Create Attempts line item if it doesn't exist
@@ -304,8 +328,16 @@ lti.app.post("/api/update", validateLtik, async (req, res) => {
     } catch (lineItemError) {
       console.error("Error with line items:", lineItemError.message);
       console.error("Full error:", lineItemError);
+      
+      // If we have a lineitem from token, continue with that
+      if (!scoreLineItemId) {
+        return res.status(500).json({ 
+          error: "Failed to retrieve line items: " + lineItemError.message
+        });
+      }
     }
 
+    // Final check before submission
     if (!scoreLineItemId) {
       console.error("No scoreLineItemId available - cannot submit grade");
       return res.status(400).json({ 
